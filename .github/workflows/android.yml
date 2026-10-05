@@ -21,8 +21,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - id: android
-        uses: android-actions/setup-android@v3
       - id: bau
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
