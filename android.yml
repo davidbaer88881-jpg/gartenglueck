@@ -1,0 +1,148 @@
+# Baut Gartenglück automatisch als Android-App (AAB für Google Play + APK zum Testen).
+# Start: Datei BUILD-TRIGGER.txt ändern (oder unter "Actions" → "Run workflow").
+# Ergebnis: unter "Releases" (AAB, APK, Store-Grafiken) und in BUILD-STATUS.md.
+name: Android-App bauen
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['BUILD-TRIGGER.txt']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Spiel zusammensetzen
+        run: |
+          (cd src && sha256sum -c game.parts.sha256) 2>&1 | tee -a build.log
+          cat src/game.part*.b64 | base64 -d | xz -d > src/game.html
+          echo "$(cat src/game.sha256)  src/game.html" | sha256sum -c - 2>&1 | tee -a build.log
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Android SDK 36 installieren
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" 2>&1 | tail -5 | tee -a build.log
+
+      - name: Icons und Store-Grafiken erzeugen
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 scripts/make-art.py . 2>&1 | tee -a build.log
+
+      - name: Abhängigkeiten installieren
+        run: npm install --legacy-peer-deps --no-audit --no-fund 2>&1 | tee -a build.log
+
+      - name: Spiel für die App vorbereiten
+        run: npm run build 2>&1 | tee -a build.log
+
+      - name: Android-Projekt anlegen
+        run: |
+          { npx cap add android && node scripts/patch-android.mjs && npx cap sync android && node scripts/patch-android.mjs; } 2>&1 | tee -a build.log
+
+      - name: App-Icons einsetzen
+        continue-on-error: true
+        run: npx @capacitor/assets generate --android --iconBackgroundColor "#7fae5a" --iconBackgroundColorDark "#4f7a39" --splashBackgroundColor "#a7c197" --splashBackgroundColorDark "#2c3a22" 2>&1 | tail -20 | tee -a build.log
+
+      - name: Schlüssel (Keystore) bereitstellen
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > upload.jks
+            echo "KS_PASS=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "NEW_KEY=0" >> "$GITHUB_ENV"
+          else
+            PASS=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)
+            echo "::add-mask::$PASS"
+            keytool -genkeypair -keystore upload.jks -storetype PKCS12 -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias upload -storepass "$PASS" -keypass "$PASS" -dname "CN=Gartenglueck, O=Gartenglueck, C=DE" >/dev/null 2>&1
+            echo "KS_PASS=$PASS" >> "$GITHUB_ENV"
+            echo "NEW_KEY=1" >> "$GITHUB_ENV"
+            mkdir -p schluessel
+            cp upload.jks schluessel/upload.jks
+            base64 -w0 upload.jks > schluessel/KEYSTORE_BASE64.txt
+            printf '%s' "$PASS" > schluessel/KEYSTORE_PASSWORD.txt
+            printf '%s\n' \
+              "Das ist dein Upload-Schluessel fuer Gartenglueck. GUT AUFHEBEN (USB-Stick + Passwortmanager)!" \
+              "Damit alle spaeteren Versionen mit demselben Schluessel unterschrieben werden:" \
+              "GitHub -> Repository gartenglueck -> Settings -> Secrets and variables -> Actions -> New repository secret" \
+              "  Name KEYSTORE_BASE64   -> Inhalt von KEYSTORE_BASE64.txt" \
+              "  Name KEYSTORE_PASSWORD -> Inhalt von KEYSTORE_PASSWORD.txt" > schluessel/LIES-MICH.txt
+          fi
+
+      - name: App bauen (AAB + APK)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --console=plain bundleRelease assembleRelease 2>&1 | tee -a ../build.log
+
+      - name: Unterschreiben
+        run: |
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          VER=$(node -p "require('./package.json').version")
+          mkdir -p out
+          cp android/app/build/outputs/bundle/release/app-release.aab "out/gartenglueck-$VER.aab"
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 -keystore upload.jks -storepass "$KS_PASS" -keypass "$KS_PASS" "out/gartenglueck-$VER.aab" upload >/dev/null
+          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          "$BT/zipalign" -f -p 4 "$APK" out/aligned.apk
+          "$BT/apksigner" sign --ks upload.jks --ks-pass "pass:$KS_PASS" --key-pass "pass:$KS_PASS" --ks-key-alias upload --out "out/gartenglueck-$VER.apk" out/aligned.apk
+          rm out/aligned.apk
+          "$BT/apksigner" verify "out/gartenglueck-$VER.apk"
+          cp store/play-icon-512.png store/feature-graphic-1024x500.png out/
+          ls -la out | tee -a build.log
+          echo "VER=$VER" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        if: env.NEW_KEY == '1'
+        with:
+          name: UPLOAD-SCHLUESSEL-SICHER-AUFBEWAHREN
+          path: schluessel/
+          retention-days: 14
+
+      - name: Release mit den Dateien anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$VER-build$GITHUB_RUN_NUMBER"
+          NOTE="AAB fuer die Play Console, APK zum Testen auf dem Handy, Store-Grafiken."
+          if [ "$NEW_KEY" = "1" ]; then NOTE="$NOTE NEUER Upload-Schluessel: unter Actions -> dieser Lauf -> Artifacts herunterladen und sicher aufbewahren!"; fi
+          gh release create "$TAG" out/* --title "Gartenglück $VER (Build $GITHUB_RUN_NUMBER)" --notes "$NOTE"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Status speichern
+        if: always()
+        run: |
+          {
+            echo "# Letzter Bau: ${{ job.status }}"
+            echo
+            echo "- Zeit: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "- Lauf: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            if [ -n "$TAG" ]; then echo "- Dateien: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"; fi
+            if [ "$NEW_KEY" = "1" ]; then echo "- Neuer Upload-Schluessel erzeugt (Artifact im Lauf)"; fi
+            echo
+            echo '## Letzte Zeilen des Protokolls'
+            echo '```'
+            tail -n 120 build.log 2>/dev/null | grep -v -i "pass" || true
+            echo '```'
+          } > BUILD-STATUS.md
+          git config user.name "gartenglueck-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add BUILD-STATUS.md
+          git commit -m "Baustatus: ${{ job.status }} (Lauf $GITHUB_RUN_NUMBER)" || true
+          git push || true
