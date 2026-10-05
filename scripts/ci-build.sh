@@ -12,12 +12,21 @@ cat src/game.part*.b64 | base64 -d | xz -d > src/game.html
 echo "$(cat src/game.sha256)  src/game.html" | sha256sum -c -
 
 step "2/8 Android SDK"
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
 echo "ANDROID_HOME=${ANDROID_HOME:-?}  Java: $(java -version 2>&1 | head -1)  Node: $(node -v)"
-SDKM=$(command -v sdkmanager || ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
-yes | "$SDKM" --licenses >/dev/null 2>&1 || true
-"$SDKM" "platforms;android-36" "build-tools;36.0.0" "platform-tools" > sdk.log 2>&1 || { tail -20 sdk.log; exit 1; }
-tail -3 sdk.log
-ls "$ANDROID_HOME/build-tools"
+SDKM=$(command -v sdkmanager || ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -1 || true)
+echo "sdkmanager: ${SDKM:-nicht gefunden}"
+ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools" 2>&1 | tr '\n' ' ' || true; echo
+if [ -n "${SDKM:-}" ]; then
+  (yes 2>/dev/null | timeout 300 "$SDKM" --licenses >/dev/null 2>&1) || true
+  timeout 600 "$SDKM" "platforms;android-36" "build-tools;36.0.0" "platform-tools" > sdk.log 2>&1 \
+    || { echo "Hinweis: sdkmanager-Fehler:"; tail -8 sdk.log; }
+fi
+[ -d "$ANDROID_HOME/platforms/android-36" ] || { echo "Android-Plattform 36 fehlt"; exit 1; }
+BT="$ANDROID_HOME/build-tools/36.0.0"
+[ -x "$BT/apksigner" ] || BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+echo "Build-Tools: $BT"
 
 step "3/8 Icons und Store-Grafiken"
 python3 -c "import PIL" 2>/dev/null \
@@ -70,7 +79,6 @@ fi
 
 step "8/8 Bauen und unterschreiben"
 (cd android && chmod +x gradlew && ./gradlew --no-daemon --console=plain --warning-mode=none bundleRelease assembleRelease)
-BT="$ANDROID_HOME/build-tools/36.0.0"
 VER=$(node -p "require('./package.json').version")
 mkdir -p out
 cp android/app/build/outputs/bundle/release/app-release.aab "out/gartenglueck-$VER.aab"
