@@ -1,0 +1,15 @@
+{
+  "appId": "de.bfamilie.gartenglueck",
+  "appName": "Gartenglück",
+  "webDir": "www",
+  "backgroundColor": "#a7c197",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SystemBars": { "insetsHandling": "css", "style": "DARK", "hidden": true },
+    "SplashScreen": { "launchShowDuration": 800, "backgroundColor": "#a7c197", "showSpinner": false }
+  }
+}

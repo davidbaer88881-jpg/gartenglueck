@@ -1,0 +1,30 @@
+{
+  "name": "gartenglueck",
+  "version": "1.2.0",
+  "androidVersionCode": 3,
+  "androidOrientation": "unspecified",
+  "private": true,
+  "description": "Gartenglück – dein eigener Traumgarten",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/prepare-www.mjs",
+    "android:add": "npm run build && npx cap add android && node scripts/patch-android.mjs && npm run icons",
+    "sync": "npm run build && npx cap sync android && node scripts/patch-android.mjs",
+    "icons": "npx @capacitor/assets generate --android --iconBackgroundColor \"#7fae5a\" --iconBackgroundColorDark \"#4f7a39\" --splashBackgroundColor \"#a7c197\" --splashBackgroundColorDark \"#2c3a22\"",
+    "open": "npx cap open android",
+    "serve": "npx http-server www -p 8080 -c-1"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@fontsource/nunito": "^5.0.0",
+    "@fontsource/young-serif": "^5.0.0",
+    "cordova-plugin-purchase": "^13.17.2",
+    "three": "0.165.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.0.0"
+  }
+}
